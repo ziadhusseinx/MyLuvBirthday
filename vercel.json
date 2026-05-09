@@ -1,4 +1,10 @@
 {
+  "framework": "vite",
+  "outputDirectory": "build/client",
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/index.html" }
+  ],
+  "trailingSlash": false,
   "headers": [
     {
       "source": "/hero/(.*)",
