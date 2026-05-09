@@ -6,7 +6,7 @@ import { cn } from "../../lib/utils";
  * FinalOverlay — Luxury cinematic love ending scene.
  *
  * Appears over the frozen last video frame with:
- * - Horizontal card carousel with photos from /srcc/
+ * - Horizontal card carousel with photos from /src/
  * - Love message paper with Arabic calligraphy
  * - Left/right navigation arrows
  * - Touch swipe support
@@ -19,7 +19,7 @@ import { cn } from "../../lib/utils";
  */
 
 // ── Image + Message Data ──────────────────────────────────────────
-// Each image from /srcc/ paired with a romantic Arabic love message
+// Each image from /src/ paired with a romantic Arabic love message
 const SLIDES = [
   {
     image: "/src/pic1.jpeg",
