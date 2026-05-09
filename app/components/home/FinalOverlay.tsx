@@ -22,47 +22,47 @@ import { cn } from "../../lib/utils";
 // Each image from /srcc/ paired with a romantic Arabic love message
 const SLIDES = [
   {
-    image: "/srcc/pic1.jpeg",
+    image: "/src/pic1.jpeg",
     message: "أنتِ أجمل صدفة حصلت في حياتي\nكل لحظة معاكِ بتبقى ذكرى مبنسهاش أبداً",
   },
   {
-    image: "/srcc/pic2.jpeg",
+    image: "/src/pic2.jpeg",
     message: "من يوم ما عرفتك وأنا حاسس إن الدنيا بقت أحلى\nعيونك هي البيت اللي دايمًا بلاقي فيه الأمان",
   },
   {
-    image: "/srcc/pic3.jpeg",
+    image: "/src/pic3.jpeg",
     message: "كل ضحكة منك بتملا الدنيا نور\nوكل يوم بيعدي معاكِ بيبقى أحلى من اللي قبله",
   },
   {
-    image: "/srcc/pic4.jpeg",
+    image: "/src/pic4.jpeg",
     message: "لو الحب كان شخص… كان هيكون إنتِ\nبحبك بكل حاجة فيّا، وبكل حاجة فيكِ",
   },
   {
-    image: "/srcc/pic5.jpeg",
+    image: "/src/pic5.jpeg",
     message: "إنتِ مش بس حبيبتي\nإنتِ صاحبتي، عيلتي، ومكاني الآمن في الدنيا دي",
   },
   {
-    image: "/srcc/pic6.jpeg",
+    image: "/src/pic6.jpeg",
     message: "بحلم بيوم نفضل فيه جنب بعض للأبد\nمن غير ما حاجة تبعدنا عن بعض",
   },
   {
-    image: "/srcc/pic7.jpeg",
+    image: "/src/pic7.jpeg",
     message: "كل صورة معاكِ بتحكي قصة\nوكل قصة فيها حب مش بيخلص",
   },
   {
-    image: "/srcc/pic8.jpeg",
+    image: "/src/pic8.jpeg",
     message: "ربنا كرمني بيكِ\nوأنا كل يوم بشكره إنه حطك في طريقي",
   },
   {
-    image: "/srcc/pic9.jpeg",
+    image: "/src/pic9.jpeg",
     message: "يا أحلى عيد ميلاد في الدنيا\nكل سنة وإنتِ معايا… وكل سنة وإنتِ أجمل",
   },
   {
-    image: "/srcc/pic10.jpeg",
+    image: "/src/pic10.jpeg",
     message: "مهما الأيام تعدي\nإنتِ هتفضلي الحاجة الوحيدة اللي قلبي مش هيتخلى عنها",
   },
   {
-    image: "/srcc/pic12.jpeg",
+    image: "/src/pic12.jpeg",
     message: "كل سنة وأنتِ نور عينيّا\nعيد ميلاد سعيد يا أغلى إنسانة في حياتي ❤️",
   },
 ];
