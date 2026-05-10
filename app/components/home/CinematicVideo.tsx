@@ -229,17 +229,25 @@ export function CinematicVideo({ children, onNavigateUp, onNavigateDown }: Cinem
       titleRef.current.style.opacity = String(titleOpacity);
     }
 
-    // Show/hide nav + overlay — only on state change
-    const complete = progressRef.current >= 0.99;
+    // Show/hide nav + overlay — trigger at 92% (last few frames)
+    const complete = progressRef.current >= 0.92;
     if (complete !== isCompleteRef.current) {
       isCompleteRef.current = complete;
       if (navDownRef.current) {
         navDownRef.current.style.opacity = complete ? "1" : "0";
         navDownRef.current.style.pointerEvents = complete ? "auto" : "none";
       }
-      if (overlayRef.current) {
-        overlayRef.current.style.opacity = complete ? "1" : "0";
-        overlayRef.current.style.pointerEvents = complete ? "auto" : "none";
+    }
+
+    // Smooth progressive overlay fade-in starting at 85%
+    if (overlayRef.current) {
+      if (progressRef.current >= 0.85) {
+        const overlayOpacity = Math.min(1, (progressRef.current - 0.85) / 0.10);
+        overlayRef.current.style.opacity = String(overlayOpacity);
+        overlayRef.current.style.pointerEvents = overlayOpacity > 0.5 ? "auto" : "none";
+      } else {
+        overlayRef.current.style.opacity = "0";
+        overlayRef.current.style.pointerEvents = "none";
       }
     }
 
