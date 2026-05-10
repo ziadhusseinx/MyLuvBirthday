@@ -3,28 +3,43 @@ import { ChevronUp, ChevronDown } from "lucide-react";
 import { cn } from "../../lib/utils";
 
 /**
- * CinematicVideo — Premium locked scroll-hijacking video experience.
+ * CinematicVideo — Apple-style scroll-driven frame sequence renderer.
  *
- * PERFORMANCE OPTIMIZATIONS v2:
- * - rAF loop ONLY runs when section is locked (not continuously)
- * - Zero React state updates per frame — all UI via direct DOM refs
- * - Video seeks throttled with adaptive threshold
- * - Particles use CSS @keyframes, zero JS overhead
- * - All transitions use transform/opacity only (GPU-composited)
- * - Passive listeners where possible, non-passive only for preventDefault
- * - Cleanup on unmount restores body scroll
- * - ADDED: Adaptive mobile detection — reduces lerp smoothing on mobile for responsiveness
- * - ADDED: Higher seek threshold to reduce decoder thrash
- * - ADDED: Video preload="metadata" instead of "auto" to reduce initial bandwidth
- * - REMOVED: backdrop-blur on nav buttons (expensive composite layer)
+ * ARCHITECTURE:
+ * - Renders WebP frames from /frames/frame_NNNN.webp onto a single <canvas>
+ * - Zero React state updates during scrolling — all DOM via refs
+ * - requestAnimationFrame loop ONLY runs while section is scroll-locked
+ * - Intelligent preloading: nearby frames first, then expanding outward
+ * - Smooth interpolation between target and rendered frame
+ * - Canvas drawImage is GPU-accelerated in all modern browsers
+ *
+ * PERFORMANCE:
+ * - Single canvas element (no DOM churn)
+ * - Preloaded Image objects cached in memory
+ * - Frame switching = single drawImage call (~0.1ms)
+ * - All UI updates via direct ref manipulation
+ * - Passive listeners where safe, non-passive only for preventDefault
  */
 
 function lerp(a: number, b: number, t: number) {
   return a + (b - a) * t;
 }
 
-// Simple mobile detection for adaptive performance
-const isMobile = typeof navigator !== 'undefined' && /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+const isMobile = typeof navigator !== "undefined" && /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+
+// ── Configuration ─────────────────────────────────────────────────
+const TOTAL_FRAMES = 120; // Adjust to match your actual frame count
+const FRAME_PATH = "/frames/frame_"; // e.g. /frames/frame_0001.webp
+const PRELOAD_AHEAD = isMobile ? 15 : 30; // How many frames to preload around current
+const SCROLL_SENSITIVITY = 0.0006;
+const TOUCH_SENSITIVITY = 0.0008;
+const MAX_DELTA_PER_EVENT = 0.015;
+const PROGRESS_LERP = isMobile ? 0.18 : 0.12;
+
+function getFrameSrc(index: number): string {
+  const padded = String(Math.max(1, Math.min(TOTAL_FRAMES, index))).padStart(4, "0");
+  return `${FRAME_PATH}${padded}.webp`;
+}
 
 interface CinematicVideoProps {
   children?: React.ReactNode;
@@ -34,18 +49,21 @@ interface CinematicVideoProps {
 
 export function CinematicVideo({ children, onNavigateUp, onNavigateDown }: CinematicVideoProps) {
   const sectionRef = useRef<HTMLDivElement>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
 
   // All mutable state in refs — zero re-renders during scrubbing
   const progressRef = useRef(0);
   const targetProgressRef = useRef(0);
-  const currentTimeRef = useRef(0);
+  const currentFrameRef = useRef(0);
   const isLockedRef = useRef(false);
   const isCompleteRef = useRef(false);
   const rafRef = useRef(0);
   const touchYRef = useRef(0);
-  const isReadyRef = useRef(false);
   const isTickingRef = useRef(false);
+
+  // Frame cache: preloaded Image objects
+  const framesRef = useRef<(HTMLImageElement | null)[]>(new Array(TOTAL_FRAMES + 1).fill(null));
+  const loadingRef = useRef<Set<number>>(new Set());
 
   // UI refs for direct DOM manipulation
   const titleRef = useRef<HTMLHeadingElement>(null);
@@ -53,16 +71,83 @@ export function CinematicVideo({ children, onNavigateUp, onNavigateDown }: Cinem
   const navDownRef = useRef<HTMLButtonElement>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
 
-  // ── SCROLL TUNING ──────────────────────────────────────────────────
-  const SCROLL_SENSITIVITY = 0.0006;
-  const TOUCH_SENSITIVITY  = 0.0008; // Slightly higher for touch responsiveness
-  const MAX_DELTA_PER_EVENT = 0.015;
-  // Adaptive lerp: mobile needs faster response, desktop gets smoother cinematic feel
-  const PROGRESS_LERP      = isMobile ? 0.18 : 0.12;
-  const VIDEO_LERP          = isMobile ? 0.08 : 0.04;
-  // Higher threshold on mobile to reduce decoder calls
-  const SEEK_THRESHOLD      = isMobile ? 0.08 : 0.03;
+  // ── FRAME PRELOADER ───────────────────────────────────────────────
+  const preloadFrame = useCallback((index: number): Promise<HTMLImageElement | null> => {
+    if (index < 1 || index > TOTAL_FRAMES) return Promise.resolve(null);
+    if (framesRef.current[index]) return Promise.resolve(framesRef.current[index]);
+    if (loadingRef.current.has(index)) return Promise.resolve(null);
 
+    loadingRef.current.add(index);
+
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.decoding = "async";
+      img.onload = () => {
+        framesRef.current[index] = img;
+        loadingRef.current.delete(index);
+        resolve(img);
+      };
+      img.onerror = () => {
+        loadingRef.current.delete(index);
+        resolve(null);
+      };
+      img.src = getFrameSrc(index);
+    });
+  }, []);
+
+  // Preload a window of frames around the current position
+  const preloadAround = useCallback((centerFrame: number) => {
+    // Priority: current frame first, then expanding outward
+    preloadFrame(centerFrame);
+    for (let offset = 1; offset <= PRELOAD_AHEAD; offset++) {
+      preloadFrame(centerFrame + offset);
+      preloadFrame(centerFrame - offset);
+    }
+  }, [preloadFrame]);
+
+  // ── CANVAS RENDERER ───────────────────────────────────────────────
+  const drawFrame = useCallback((frameIndex: number) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const ctx = canvas.getContext("2d", { alpha: false });
+    if (!ctx) return;
+
+    const img = framesRef.current[frameIndex];
+    if (!img) return;
+
+    // Resize canvas to match display size (only when needed)
+    const dpr = Math.min(window.devicePixelRatio || 1, 2); // Cap at 2x for performance
+    const displayWidth = canvas.clientWidth;
+    const displayHeight = canvas.clientHeight;
+    const bufferWidth = Math.round(displayWidth * dpr);
+    const bufferHeight = Math.round(displayHeight * dpr);
+
+    if (canvas.width !== bufferWidth || canvas.height !== bufferHeight) {
+      canvas.width = bufferWidth;
+      canvas.height = bufferHeight;
+    }
+
+    // Cover-fit the image (like object-fit: cover)
+    const imgRatio = img.naturalWidth / img.naturalHeight;
+    const canvasRatio = bufferWidth / bufferHeight;
+
+    let sx = 0, sy = 0, sw = img.naturalWidth, sh = img.naturalHeight;
+
+    if (imgRatio > canvasRatio) {
+      // Image is wider — crop sides
+      sw = img.naturalHeight * canvasRatio;
+      sx = (img.naturalWidth - sw) / 2;
+    } else {
+      // Image is taller — crop top/bottom
+      sh = img.naturalWidth / canvasRatio;
+      sy = (img.naturalHeight - sh) / 2;
+    }
+
+    ctx.drawImage(img, sx, sy, sw, sh, 0, 0, bufferWidth, bufferHeight);
+  }, []);
+
+  // ── SCROLL LOCK / UNLOCK ──────────────────────────────────────────
   const lockScroll = useCallback(() => {
     if (isLockedRef.current) return;
     isLockedRef.current = true;
@@ -111,34 +196,29 @@ export function CinematicVideo({ children, onNavigateUp, onNavigateDown }: Cinem
     }
   }, [unlockScroll, onNavigateDown]);
 
-  // rAF loop — ONLY runs while locked
+  // ── rAF LOOP — runs ONLY while locked ─────────────────────────────
   const tick = useCallback(() => {
     if (!isTickingRef.current) return;
 
-    const video = videoRef.current;
-    if (!video || !video.duration || !isReadyRef.current) {
-      rafRef.current = requestAnimationFrame(tick);
-      return;
-    }
-
-    // Stage 1: Smooth the raw scroll target into progress
+    // Smooth the raw scroll target
     progressRef.current = lerp(progressRef.current, targetProgressRef.current, PROGRESS_LERP);
     if (Math.abs(progressRef.current - targetProgressRef.current) < 0.0005) {
       progressRef.current = targetProgressRef.current;
     }
 
-    // Stage 2: Smooth progress into video currentTime
-    const targetTime = progressRef.current * video.duration;
-    currentTimeRef.current = lerp(currentTimeRef.current, targetTime, VIDEO_LERP);
+    // Map progress (0–1) to frame index (1–TOTAL_FRAMES)
+    const targetFrame = Math.round(progressRef.current * (TOTAL_FRAMES - 1)) + 1;
 
-    const clampedTime = Math.max(0, Math.min(video.duration - 0.05, currentTimeRef.current));
+    // Only redraw when frame actually changes
+    if (targetFrame !== currentFrameRef.current) {
+      currentFrameRef.current = targetFrame;
+      drawFrame(targetFrame);
 
-    // Only seek when delta is meaningful (reduces decoder thrash)
-    if (Math.abs(video.currentTime - clampedTime) > SEEK_THRESHOLD) {
-      video.currentTime = clampedTime;
+      // Preload frames around the new position
+      preloadAround(targetFrame);
     }
 
-    // Update progress bar via direct DOM — transform only (GPU)
+    // Update progress bar — transform only (GPU)
     if (progressBarRef.current) {
       progressBarRef.current.style.transform = `scaleX(${progressRef.current})`;
     }
@@ -164,8 +244,9 @@ export function CinematicVideo({ children, onNavigateUp, onNavigateDown }: Cinem
     }
 
     rafRef.current = requestAnimationFrame(tick);
-  }, []);
+  }, [drawFrame, preloadAround]);
 
+  // ── SCROLL EVENT HANDLERS ─────────────────────────────────────────
   const normalizeDelta = useCallback((deltaY: number, deltaMode: number): number => {
     let normalized = deltaY;
     if (deltaMode === 1) normalized *= 40;
@@ -174,7 +255,7 @@ export function CinematicVideo({ children, onNavigateUp, onNavigateDown }: Cinem
   }, []);
 
   const handleWheel = useCallback((e: WheelEvent) => {
-    if (!isLockedRef.current || !isReadyRef.current) return;
+    if (!isLockedRef.current) return;
     e.preventDefault();
     e.stopPropagation();
 
@@ -205,7 +286,7 @@ export function CinematicVideo({ children, onNavigateUp, onNavigateDown }: Cinem
   }, []);
 
   const handleTouchMove = useCallback((e: TouchEvent) => {
-    if (!isLockedRef.current || !isReadyRef.current) return;
+    if (!isLockedRef.current) return;
     e.preventDefault();
 
     const currentY = e.touches[0].clientY;
@@ -230,7 +311,7 @@ export function CinematicVideo({ children, onNavigateUp, onNavigateDown }: Cinem
     targetProgressRef.current = Math.max(0, Math.min(1, newTarget));
   }, [goUp, goDown]);
 
-  // IntersectionObserver: lock when section enters viewport
+  // ── INTERSECTION OBSERVER: lock when section enters ───────────────
   useEffect(() => {
     const section = sectionRef.current;
     if (!section) return;
@@ -251,29 +332,24 @@ export function CinematicVideo({ children, onNavigateUp, onNavigateDown }: Cinem
     return () => observer.disconnect();
   }, [lockScroll]);
 
-  // Attach event listeners
+  // ── INITIAL PRELOAD + EVENT LISTENERS ─────────────────────────────
   useEffect(() => {
-    const video = videoRef.current;
-    if (!video) return;
+    // Preload the first batch of frames immediately
+    preloadAround(1);
 
-    const onLoadedMetadata = () => {
-      video.pause();
-      video.currentTime = 0;
-      isReadyRef.current = true;
-    };
-
-    if (video.readyState >= 1) {
-      onLoadedMetadata();
-    } else {
-      video.addEventListener("loadedmetadata", onLoadedMetadata);
-    }
+    // Draw frame 1 once it's loaded
+    preloadFrame(1).then((img) => {
+      if (img) {
+        currentFrameRef.current = 1;
+        drawFrame(1);
+      }
+    });
 
     window.addEventListener("wheel", handleWheel, { passive: false });
     window.addEventListener("touchstart", handleTouchStart, { passive: true });
     window.addEventListener("touchmove", handleTouchMove, { passive: false });
 
     return () => {
-      video.removeEventListener("loadedmetadata", onLoadedMetadata);
       window.removeEventListener("wheel", handleWheel);
       window.removeEventListener("touchstart", handleTouchStart);
       window.removeEventListener("touchmove", handleTouchMove as any);
@@ -282,9 +358,9 @@ export function CinematicVideo({ children, onNavigateUp, onNavigateDown }: Cinem
       document.body.style.overflow = "";
       document.body.style.touchAction = "";
     };
-  }, [handleWheel, handleTouchStart, handleTouchMove]);
+  }, [handleWheel, handleTouchStart, handleTouchMove, preloadAround, preloadFrame, drawFrame]);
 
-  // Reduced particles from 8 to 5
+  // Reduced particles
   const particles = useMemo(() =>
     Array.from({ length: 5 }).map((_, i) => ({
       id: i,
@@ -302,19 +378,14 @@ export function CinematicVideo({ children, onNavigateUp, onNavigateDown }: Cinem
       id="cinematic-video"
       className="relative w-full h-screen overflow-hidden bg-bg-dark"
     >
-      {/* Video — GPU layer, metadata preload for faster init */}
-      <video
-        ref={videoRef}
-        src="/hero/vid.mp4"
-        muted
-        playsInline
-        preload="metadata"
-        disablePictureInPicture
-        className="absolute inset-0 w-full h-full object-cover"
+      {/* Canvas — GPU-accelerated frame renderer */}
+      <canvas
+        ref={canvasRef}
+        className="absolute inset-0 w-full h-full"
         style={{ transform: "translateZ(0)" }}
       />
 
-      {/* Cinematic vignette — static, no animation */}
+      {/* Cinematic vignette — static */}
       <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(ellipse_at_center,transparent_30%,rgba(8,4,6,0.75)_100%)] z-10" />
 
       {/* Edge blends — static */}
@@ -327,7 +398,7 @@ export function CinematicVideo({ children, onNavigateUp, onNavigateDown }: Cinem
       {/* Noise — static */}
       <div className="absolute inset-0 bg-noise z-10" />
 
-      {/* Particles — CSS only, reduced count */}
+      {/* Particles — CSS only */}
       <div className="absolute inset-0 pointer-events-none z-20">
         {particles.map((p) => (
           <div
@@ -366,7 +437,7 @@ export function CinematicVideo({ children, onNavigateUp, onNavigateDown }: Cinem
         />
       </div>
 
-      {/* Nav: Back (no backdrop-blur for performance) */}
+      {/* Nav: Back */}
       <button
         onClick={goUp}
         className={cn(
@@ -382,7 +453,7 @@ export function CinematicVideo({ children, onNavigateUp, onNavigateDown }: Cinem
         <ChevronUp size={24} strokeWidth={1.5} />
       </button>
 
-      {/* Nav: Continue (no backdrop-blur for performance) */}
+      {/* Nav: Continue */}
       <button
         ref={navDownRef}
         onClick={goDown}
@@ -400,7 +471,7 @@ export function CinematicVideo({ children, onNavigateUp, onNavigateDown }: Cinem
         <ChevronDown size={28} strokeWidth={1.5} />
       </button>
 
-      {/* Children overlay */}
+      {/* Children overlay (FinalOverlay) */}
       <div
         ref={overlayRef}
         className="absolute inset-0 z-30 flex items-center justify-center opacity-0 pointer-events-none transition-opacity duration-1000"
